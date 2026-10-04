@@ -38,6 +38,13 @@ interface ToolCallAccumulator {
     arguments: string;
 }
 
+export interface CompletionAccumulator {
+    content: string;
+    toolCalls: Map<number, ToolCallAccumulator>;
+    thinking?: boolean;
+    tail?: string;
+}
+
 function authHeaders(config: OpenAIVoiceConfig): Record<string, string> {
     return { Authorization: `Bearer ${config.apiKey}` };
 }
@@ -47,21 +54,14 @@ async function failure(response: Response, what: string): Promise<Error> {
     try {
         detail = (await response.text()).slice(0, 200);
     } catch {
-        // The body is a nicety; the status is what matters.
     }
     return new Error(`${what} failed: ${response.status}${detail ? ` ${detail}` : ''}`);
 }
 
-/**
- * POST /v1/audio/transcriptions — multipart, as OpenAI defines it.
- *
- * The part carries its own filename because servers dispatch on the extension
- * as often as on the MIME type.
- */
 export async function transcribe(
     config: OpenAIVoiceConfig,
     audio: AudioPart,
-    options: { language?: string | null; signal?: AbortSignal },
+    options: { language?: string | null; signal?: AbortSignal } = {},
 ): Promise<TranscriptionResult> {
     const form = new FormData();
     if (audio.kind === 'blob') {
@@ -93,11 +93,6 @@ export async function transcribe(
     return { text: typeof data.text === 'string' ? data.text : '' };
 }
 
-/**
- * POST /v1/audio/speech — returns the whole clip. Servers that support
- * incremental synthesis do so over transports that are not standardized, so
- * this waits for the full body and plays it in one piece.
- */
 export async function synthesize(
     config: OpenAIVoiceConfig,
     text: string,
@@ -122,20 +117,60 @@ export async function synthesize(
     return response.arrayBuffer();
 }
 
-/**
- * Folds one SSE delta into the accumulating completion.
- *
- * Tool calls arrive split across deltas and are addressed by `index`, not by
- * id — the id itself shows up in one delta and is absent from the rest, and
- * the arguments string is streamed a fragment at a time. Exported for tests,
- * which is the only way to exercise fragment reassembly without a server.
- */
+const THINK_OPEN = '<think>';
+const THINK_CLOSE = '</think>';
+
+function danglingPrefix(text: string, tag: string): number {
+    const most = Math.min(text.length, tag.length - 1);
+    for (let length = most; length > 0; length--) {
+        if (text.endsWith(tag.slice(0, length))) {
+            return length;
+        }
+    }
+    return 0;
+}
+
+export function stripReasoning(state: CompletionAccumulator, chunk: string): string {
+    let pending = (state.tail ?? '') + chunk;
+    let visible = '';
+
+    while (pending.length > 0) {
+        if (state.thinking) {
+            const close = pending.indexOf(THINK_CLOSE);
+            if (close === -1) {
+                break;
+            }
+            pending = pending.slice(close + THINK_CLOSE.length);
+            state.thinking = false;
+            continue;
+        }
+
+        const open = pending.indexOf(THINK_OPEN);
+        if (open === -1) {
+            break;
+        }
+        visible += pending.slice(0, open);
+        pending = pending.slice(open + THINK_OPEN.length);
+        state.thinking = true;
+    }
+
+    const tag = state.thinking ? THINK_CLOSE : THINK_OPEN;
+    const held = danglingPrefix(pending, tag);
+    state.tail = held > 0 ? pending.slice(pending.length - held) : '';
+
+    if (!state.thinking) {
+        visible += pending.slice(0, pending.length - held);
+    }
+
+    return visible;
+}
+
 export function applyCompletionDelta(
-    state: { content: string; toolCalls: Map<number, ToolCallAccumulator> },
+    state: CompletionAccumulator,
     delta: any,
 ): void {
     if (typeof delta?.content === 'string') {
-        state.content += delta.content;
+        state.content += stripReasoning(state, delta.content);
     }
 
     if (!Array.isArray(delta?.tool_calls)) {
@@ -158,11 +193,6 @@ export function applyCompletionDelta(
     }
 }
 
-/**
- * Splits a growing SSE buffer into complete events, returning the unconsumed
- * tail. Chunk boundaries fall anywhere, including mid-event, so a partial
- * trailing event must survive to the next read.
- */
 export function splitSSEEvents(buffer: string): { events: string[]; rest: string } {
     const parts = buffer.split('\n\n');
     const rest = parts.pop() ?? '';
@@ -187,12 +217,6 @@ function parseSSEEvent(event: string): any | null {
     return null;
 }
 
-/**
- * POST /v1/chat/completions with `stream: true`.
- *
- * `onContentDelta` fires as text arrives so a caller can start speaking before
- * the completion finishes.
- */
 export async function streamChatCompletion(
     config: OpenAIVoiceConfig,
     messages: ChatMessage[],
@@ -219,12 +243,10 @@ export async function streamChatCompletion(
         throw await failure(response, 'Chat completion');
     }
 
-    const state = { content: '', toolCalls: new Map<number, ToolCallAccumulator>() };
+    const state: CompletionAccumulator = { content: '', toolCalls: new Map<number, ToolCallAccumulator>() };
     const body = response.body;
 
     if (!body) {
-        // No streaming body available: fall back to the whole payload. Some
-        // runtimes expose only text().
         const text = await response.text();
         let buffer = text;
         const { events } = splitSSEEvents(buffer + '\n\n');
@@ -262,6 +284,11 @@ export async function streamChatCompletion(
                 }
             }
         }
+    }
+
+    if (!state.thinking && state.tail) {
+        state.content += state.tail;
+        state.tail = '';
     }
 
     const toolCalls: ChatToolCall[] = [...state.toolCalls.entries()]

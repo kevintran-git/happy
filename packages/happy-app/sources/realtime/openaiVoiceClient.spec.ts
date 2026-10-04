@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { applyCompletionDelta, splitSSEEvents } from './openaiVoiceClient';
+import { applyCompletionDelta, splitSSEEvents, stripReasoning, type CompletionAccumulator } from './openaiVoiceClient';
 
-function emptyState() {
+function emptyState(): CompletionAccumulator {
     return { content: '', toolCalls: new Map<number, { id: string; name: string; arguments: string }>() };
 }
 
@@ -10,6 +10,14 @@ describe('applyCompletionDelta', () => {
         const state = emptyState();
         applyCompletionDelta(state, { content: 'Hel' });
         applyCompletionDelta(state, { content: 'lo' });
+
+        expect(state.content).toBe('Hello');
+    });
+
+    it('excludes reasoning from the accumulated content', () => {
+        const state = emptyState();
+        applyCompletionDelta(state, { content: '<think>scratch' });
+        applyCompletionDelta(state, { content: 'pad</think>Hello' });
 
         expect(state.content).toBe('Hello');
     });
@@ -58,6 +66,47 @@ describe('applyCompletionDelta', () => {
         applyCompletionDelta(state, { tool_calls: [{ id: 'a', function: { name: 'only', arguments: '{}' } }] });
 
         expect(state.toolCalls.get(0)!.name).toBe('only');
+    });
+});
+
+describe('stripReasoning', () => {
+    it('passes plain text through unchanged', () => {
+        const state = emptyState();
+
+        expect(stripReasoning(state, 'All green.')).toBe('All green.');
+    });
+
+    it('drops a reasoning block that opens and closes in one chunk', () => {
+        const state = emptyState();
+
+        expect(stripReasoning(state, '<think>weighing options</think>All green.')).toBe('All green.');
+    });
+
+    it('stays inside a block until the closing tag arrives', () => {
+        const state = emptyState();
+
+        expect(stripReasoning(state, '<think>still')).toBe('');
+        expect(stripReasoning(state, ' deciding')).toBe('');
+        expect(stripReasoning(state, '</think>Done.')).toBe('Done.');
+    });
+
+    it('holds a tag split across chunks instead of emitting it', () => {
+        const state = emptyState();
+
+        expect(stripReasoning(state, 'ready <thi')).toBe('ready ');
+        expect(stripReasoning(state, 'nk>hidden</think>visible')).toBe('visible');
+    });
+
+    it('does not hold text that only looks like the start of a tag', () => {
+        const state = emptyState();
+
+        expect(stripReasoning(state, 'a < b')).toBe('a < b');
+    });
+
+    it('keeps text after a block that reopens later', () => {
+        const state = emptyState();
+
+        expect(stripReasoning(state, '<think>one</think>mid<think>two</think>end')).toBe('midend');
     });
 });
 
