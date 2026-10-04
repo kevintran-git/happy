@@ -8,7 +8,8 @@ import { ItemGroup } from '@/components/ItemGroup';
 import { ItemList } from '@/components/ItemList';
 import { Switch } from '@/components/Switch';
 import { UsageBar } from '@/components/usage/UsageBar';
-import { useSettingMutable, useEntitlement, useLocalSetting, useLocalSettingMutable, useSetting } from '@/sync/storage';
+import { useSettingMutable, useEntitlement, useLocalSetting, useLocalSettingMutable, useSetting, useSettings } from '@/sync/storage';
+import { resolveOpenAIVoiceConfig } from '@/realtime/openaiVoiceConfig';
 import { useAuth } from '@/auth/AuthContext';
 import { findLanguageByCode, getLanguageDisplayName, LANGUAGES } from '@/constants/Languages';
 import { fetchVoiceUsage, type VoiceUsageResponse } from '@/sync/apiVoice';
@@ -31,6 +32,8 @@ export default React.memo(function VoiceSettingsScreen() {
     const [voiceAssistantLanguage] = useSettingMutable('voiceAssistantLanguage');
     const [voiceCustomAgentId, setVoiceCustomAgentId] = useSettingMutable('voiceCustomAgentId');
     const [voiceBypassToken, setVoiceBypassToken] = useSettingMutable('voiceBypassToken');
+    const [voiceBackend, setVoiceBackend] = useSettingMutable('voiceBackend');
+    const settings = useSettings();
     const [voiceUpsellOverride, setVoiceUpsellOverride] = useLocalSettingMutable('voiceUpsellOverride');
     const experiments = useSetting('experiments');
     const devModeEnabled = __DEV__ || useLocalSetting('devModeEnabled');
@@ -56,6 +59,32 @@ export default React.memo(function VoiceSettingsScreen() {
         trackPaywallButtonClicked('voluntary_support');
         await sync.presentPaywall('voluntary_support');
     }, []);
+
+    const openAIBackendReady = React.useMemo(() => {
+        return resolveOpenAIVoiceConfig(settings) !== null;
+    }, [settings]);
+
+    const backendLabel = voiceBackend === 'openai-compatible'
+        ? t('settingsVoice.backendOpenAICompatible')
+        : t('settingsVoice.backendElevenLabs');
+
+    const handleBackendSelect = React.useCallback(() => {
+        Modal.alert(
+            t('settingsVoice.backendTitle'),
+            t('settingsVoice.backendDescription'),
+            [
+                {
+                    text: t('settingsVoice.backendElevenLabs'),
+                    onPress: () => setVoiceBackend('elevenlabs'),
+                },
+                {
+                    text: t('settingsVoice.backendOpenAICompatible'),
+                    onPress: () => setVoiceBackend('openai-compatible'),
+                },
+                { text: t('common.cancel'), style: 'cancel' },
+            ],
+        );
+    }, [setVoiceBackend]);
 
     const handleCustomAgentId = React.useCallback(async () => {
         const value = await Modal.prompt(
@@ -144,6 +173,30 @@ export default React.memo(function VoiceSettingsScreen() {
 
     return (
         <ItemList style={{ paddingTop: 0 }}>
+            {/* Backend Selection */}
+            <ItemGroup
+                title={t('settingsVoice.backendTitle')}
+                footer={t('settingsVoice.backendDescription')}
+            >
+                <Item
+                    title={t('settingsVoice.backend')}
+                    detail={backendLabel}
+                    icon={<Ionicons name="hardware-chip-outline" size={29} color="#5856D6" />}
+                    onPress={handleBackendSelect}
+                />
+                {voiceBackend === 'openai-compatible' && (
+                    <Item
+                        title={t('settingsVoice.backendConfigure')}
+                        subtitle={t('settingsVoice.backendConfigureSubtitle')}
+                        detail={openAIBackendReady
+                            ? t('settingsVoice.backendReady')
+                            : t('settingsVoice.backendIncomplete')}
+                        icon={<Ionicons name="server-outline" size={29} color="#007AFF" />}
+                        onPress={() => router.push('/settings/voice/backend')}
+                    />
+                )}
+            </ItemGroup>
+
             {/* Voice Usage */}
             {usageLoading ? (
                 <View style={{ paddingVertical: 24, alignItems: 'center' }}>

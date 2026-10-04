@@ -15,6 +15,12 @@ export const SUPPORTED_SCHEMA_VERSION = 2;
 export const SESSION_LIST_GROUPING_MODES = ['flat', 'project'] as const;
 export type SessionListGrouping = typeof SESSION_LIST_GROUPING_MODES[number];
 
+// Which implementation of the VoiceSession interface runs the voice assistant.
+// 'elevenlabs' is the hosted agent; 'openai-compatible' is the in-app cascade
+// against a server the user supplies.
+export const VOICE_BACKENDS = ['elevenlabs', 'openai-compatible'] as const;
+export type VoiceBackend = typeof VOICE_BACKENDS[number];
+
 export const SettingsSchema = z.object({
     // Schema version for compatibility detection
     schemaVersion: z.number().default(SUPPORTED_SCHEMA_VERSION).describe('Settings schema version for compatibility checks'),
@@ -59,6 +65,13 @@ export const SettingsSchema = z.object({
     voiceAssistantLanguage: z.string().nullable().describe('Preferred language for voice assistant (null for auto-detect)'),
     voiceCustomAgentId: z.string().nullable().describe('Custom ElevenLabs agent ID (null to use Happy default)'),
     voiceBypassToken: z.boolean().describe('Bypass Happy server token and connect directly to ElevenLabs (requires custom agent ID)'),
+    voiceBackend: z.enum(VOICE_BACKENDS).describe('Which voice backend runs the assistant: the ElevenLabs agent or a user-supplied OpenAI-compatible server'),
+    voiceApiBaseUrl: z.string().nullable().describe('Base URL of an OpenAI-compatible voice backend, serving /v1/audio/transcriptions, /v1/audio/speech and /v1/chat/completions'),
+    voiceApiKey: z.string().nullable().describe('Bearer token for the OpenAI-compatible voice backend'),
+    voiceSttModel: z.string().nullable().describe('Transcription model id on the OpenAI-compatible voice backend'),
+    voiceTtsModel: z.string().nullable().describe('Speech model id on the OpenAI-compatible voice backend'),
+    voiceTtsVoice: z.string().nullable().describe('Speech voice id on the OpenAI-compatible voice backend'),
+    voiceLlmModel: z.string().nullable().describe('Chat model id on the OpenAI-compatible voice backend'),
     preferredLanguage: z.string().nullable().describe('Preferred UI language (null for auto-detect from device locale)'),
     recentMachinePaths: z.array(z.object({
         machineId: z.string(),
@@ -137,6 +150,13 @@ export const settingsDefaults: Settings = {
     voiceAssistantLanguage: null,
     voiceCustomAgentId: null,
     voiceBypassToken: false,
+    voiceBackend: 'elevenlabs',
+    voiceApiBaseUrl: null,
+    voiceApiKey: null,
+    voiceSttModel: null,
+    voiceTtsModel: null,
+    voiceTtsVoice: null,
+    voiceLlmModel: null,
     preferredLanguage: null,
     recentMachinePaths: [],
     lastUsedAgent: null,

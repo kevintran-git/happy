@@ -1,14 +1,21 @@
 import React from 'react';
 import { RealtimeVoiceSession } from './RealtimeVoiceSession';
-import { useVoiceSessionGeneration } from '@/sync/storage';
+import { OpenAIVoiceSessionBridge } from './OpenAIVoiceSessionBridge';
+import { useSetting, useVoiceSessionGeneration } from '@/sync/storage';
 
 export const RealtimeProvider = ({ children }: { children: React.ReactNode }) => {
     // Web SDK (@elevenlabs/react) uses a plain WebSocket — no LiveKit Room to
     // go stale — so this re-key is mostly defensive. Kept symmetric with native.
     const generation = useVoiceSessionGeneration();
+    const backend = useSetting('voiceBackend');
+
     return (
         <>
-            <RealtimeVoiceSession key={generation} />
+            {backend === 'openai-compatible' ? (
+                <OpenAIVoiceSessionBridge key={generation} />
+            ) : (
+                <RealtimeVoiceSession key={generation} />
+            )}
             {children}
         </>
     );

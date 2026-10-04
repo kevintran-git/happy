@@ -1,14 +1,22 @@
 # Voice Architecture
 
-How the ElevenLabs voice assistant integrates with the Happy app, routes messages to sessions, and manages context delivery.
+How the voice assistant integrates with the Happy app, routes messages to sessions, and manages context delivery.
+
+Two implementations of the same `VoiceSession` interface exist. The hosted ElevenLabs agent is the default and everything below describes it unless stated otherwise; the alternative runs the turn loop in the app against a server the user supplies, and is covered in [Backends](#backends).
 
 ## Components
 
 ```text
 SessionView.tsx            UI — mic button, triggers voice start/stop
 RealtimeSession.ts         Lifecycle — start/stop, token fetch, session routing state
+RealtimeProvider.tsx       Mounts whichever backend the voiceBackend setting selects
 RealtimeVoiceSession.tsx   Native ElevenLabs bridge (useConversation hook)
 RealtimeVoiceSession.web.tsx  Web ElevenLabs bridge (same interface)
+OpenAIVoiceSession.ts      In-app turn loop against an OpenAI-compatible server
+openaiVoiceClient.ts       HTTP for the three OpenAI endpoints
+openaiVoiceConfig.ts       All-or-nothing config resolution from settings
+vad.ts                     Energy-gate voice activity detection
+audio/io.ts, audio/io.web.ts  Microphone capture and speaker playback per platform
 voiceHooks.ts              Context delivery — formats and routes app events to voice agent
 contextFormatters.ts       Text formatters for session context, messages, permissions
 realtimeClientTools.ts     Tool implementations the voice agent can invoke
@@ -166,6 +174,35 @@ User taps mic again (or navigates away)
          └──> voiceHooks.onVoiceStopped() — clears state
 ```
 
+## Backends
+
+`settings.voiceBackend` selects which implementation of `VoiceSession` is registered. It defaults to `'elevenlabs'`; the only other value is `'openai-compatible'`. `RealtimeProvider` mounts exactly one of the two, because `registerVoiceSession` holds a single instance and mounting both would make the winner depend on render order.
+
+### openai-compatible
+
+The agent loop ElevenLabs runs on their servers runs in the app instead, against any server exposing three endpoints at one base URL with bearer auth:
+
+| Endpoint | Used for |
+|----------|----------|
+| `POST /v1/audio/transcriptions` | multipart upload of one captured utterance |
+| `POST /v1/chat/completions` | SSE-streamed completion with tool calls |
+| `POST /v1/audio/speech` | the whole reply clip, in the platform's playback format |
+
+No vendor, hostname, model id or voice id is built in. All six fields — base URL, API key, and the four model/voice ids — are configured in Settings → Voice → Server Settings, and the backend is unusable until every one of them is set: there is no sensible default for a model id, because it is named by whichever server the user runs.
+
+One turn is: listen, transcribe, complete, speak, dispatch tool calls, then complete again so the model can speak about the tool results. Every step is abortable, which is what makes barge-in and `endSession` immediate rather than "after the current request finishes".
+
+Billing is the user's, directly with their server, so none of Happy's token minting, usage gating or paywall applies to this path. The system prompt is still Happy's — only the transport is theirs.
+
+Three things ElevenLabs supplies for free are rebuilt locally:
+
+- **VAD** — `vad.ts` runs an energy gate over frame RMS. An utterance starts after `minSpeechMs` of speech and ends after `silenceMs` of continuous silence, so the pause between two words does not end the sentence. There is no continuous `vadScore`, so `realtimeMode` is driven by the start/end transitions instead of a debounced threshold.
+- **`skip_turn`** — `VOICE_SYSTEM_PROMPT_BASE` instructs the model to call it when the user was addressing someone else. ElevenLabs' platform provides that tool; nothing provides it here, so `OpenAIVoiceSession` declares it alongside the two client tools and handles it by suppressing both speech and the follow-up completion.
+- **The context/prompt distinction** — `sendTextMessage` aborts the current turn and queues a user message; `sendContextualUpdate` only queues. Updates that arrive mid-turn are staged in `pendingContext` and folded in at the turn boundary, because appending to the message array the in-flight completion was built from would mutate it under the request.
+
+Capture and playback are platform files resolved by the bundler. Web records with `MediaRecorder` and reads VAD frames from an `AnalyserNode`, producing a `Blob`. Native records PCM with `react-native-audio-api`, encodes 16 kHz mono WAV, writes it to the cache directory, and hands back a file URI so a whole recording never has to sit in JS memory as a `Blob`.
+
 ## Related
 
 - `docs/plans/elevenlabs-voice-usage-gating.md` — usage gating and paywall flow for voice sessions.
+- `docs/plans/openai-compatible-voice-backend.md` — design of the second backend.

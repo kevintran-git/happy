@@ -15,6 +15,7 @@ import {
 } from '@/sync/persistence';
 import { buildVoiceFirstMessage, buildVoiceSystemPrompt } from './voiceSystemPrompt';
 import { getVoiceUpsellVariant } from './voiceExperiment';
+import { resolveOpenAIVoiceConfig } from './openaiVoiceConfig';
 
 let voiceSession: VoiceSession | null = null;
 let voiceSessionStarted: boolean = false;
@@ -47,8 +48,47 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
     }
 
     try {
+        const settings = storage.getState().settings;
+
+        // A user-supplied OpenAI-compatible backend bills the user directly, so
+        // none of Happy's token minting, usage gating or paywall applies. The
+        // session prompt is still ours — only the transport is theirs.
+        if (settings.voiceBackend === 'openai-compatible') {
+            const openAIConfig = resolveOpenAIVoiceConfig(settings);
+            if (!openAIConfig) {
+                storage.getState().setRealtimeStatus('disconnected');
+                Modal.alert(
+                    t('settingsVoice.openaiBackend.title'),
+                    t('settingsVoice.openaiBackend.missingConfig'),
+                );
+                return null;
+            }
+
+            currentSessionId = sessionId;
+            const systemPrompt = buildVoiceSystemPrompt({
+                initialContext,
+                onboardingPromptLoadCount: getVoiceOnboardingPromptLoadCount(),
+                voiceMessageCount: getVoiceMessageCount(),
+                includePaidVoiceOnboarding: false,
+            });
+            const conversationId = await voiceSession.startSession({
+                sessionId,
+                initialContext,
+                systemPrompt,
+                firstMessage: buildVoiceFirstMessage({
+                    hasPro: true,
+                    onboardingPromptLoadCount: 0,
+                    includePaidVoiceOnboarding: false,
+                }),
+            });
+            currentVoiceConversationId = conversationId;
+            currentVoiceSessionStartedAt = Date.now();
+            voiceSessionStarted = true;
+            return conversationId;
+        }
+
         // Bypass Happy server token — only when user has their own custom agent
-        const { voiceBypassToken, voiceCustomAgentId } = storage.getState().settings;
+        const { voiceBypassToken, voiceCustomAgentId } = settings;
         if (voiceBypassToken && voiceCustomAgentId) {
             console.log('[Voice] Bypassing token, custom agent ID:', voiceCustomAgentId);
             currentSessionId = sessionId;
